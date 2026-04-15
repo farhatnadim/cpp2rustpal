@@ -25,45 +25,29 @@
   "contributes": {
     "commands": [
       {
-        "command": "cppToRust.translate",
-        "title": "C++ to Rust: Translate Current File"
+        "command": "cppToRust.refreshHints",
+        "title": "C++ to Rust: Refresh Hints"
       },
       {
-        "command": "cppToRust.openRustEditor",
-        "title": "C++ to Rust: Open Rust Editor"
+        "command": "cppToRust.openHints",
+        "title": "C++ to Rust: Open Hints"
       },
       {
-        "command": "cppToRust.toggleAutoUpdate",
-        "title": "C++ to Rust: Toggle Auto-Update"
+        "command": "cppToRust.toggleEnabled",
+        "title": "C++ to Rust: Toggle Enabled"
+      },
+      {
+        "command": "cppToRust.openCargoProject",
+        "title": "C++ to Rust: Open Mirrored Cargo Project"
       }
     ],
     "configuration": {
       "title": "C++ to Rust Translator",
       "properties": {
-        "cppToRust.autoUpdate": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically update Rust file as you type in C++"
-        },
-        "cppToRust.showSyntaxHints": {
-          "type": "boolean",
-          "default": true,
-          "description": "Include syntax hints in the Rust output"
-        },
-        "cppToRust.showConceptualMapping": {
-          "type": "boolean",
-          "default": true,
-          "description": "Include conceptual mapping comments"
-        },
-        "cppToRust.sideBySide": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically open Rust file in side-by-side editor"
-        },
         "cppToRust.llmEnabled": {
           "type": "boolean",
           "default": true,
-          "description": "Use local LLM (llama-server) for translation when available; falls back to static regex if unreachable"
+          "description": "Master switch. When false, the extension does nothing."
         },
         "cppToRust.llmEndpoint": {
           "type": "string",
@@ -74,6 +58,21 @@
           "type": "string",
           "default": "unsloth/Qwen3.5-35B-A3B",
           "description": "Model alias to send in chat completions requests"
+        },
+        "cppToRust.sideBySide": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open the sibling .hints.md beside the C++ file"
+        },
+        "cppToRust.healthCheckIntervalMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "How often (ms) to poll GET {endpoint}/v1/models while a C++ file is active"
+        },
+        "cppToRust.cargoMirrorEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scaffold and maintain a rust_<name>/ Cargo project next to each detected cpp_<name>/"
         }
       }
     }

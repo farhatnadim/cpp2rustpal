@@ -1,11 +1,5 @@
-/**
- * LLM Client - Calls a local llama-server (OpenAI-compatible API)
- * for C++ to Rust concept translation.
- */
-
 const TIMEOUT_MS = 15000;
-const COOLDOWN_MS = 60000;
-const MAX_INPUT_CHARS = 4000;
+const MAX_INPUT_CHARS = 8000;
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -13,60 +7,78 @@ interface ChatMessage {
 }
 
 interface ChatResponse {
-  choices: Array<{
-    message: {
-      content: string;
-    };
-  }>;
+  choices: Array<{ message: { content: string } }>;
 }
 
-const SYSTEM_PROMPT = `You are a Rust learning assistant helping a C++ programmer understand Rust concepts.
+export interface LlmResult {
+  hintsMarkdown: string;
+  deps: string[];
+  depsTrailerPresent: boolean;
+}
 
-STRICT RULES - never break these:
-1. NEVER write complete, runnable Rust functions or full implementations.
-2. ONLY produce Rust line comments (// ...) and short syntax fragments of 1-3 lines maximum.
-3. Syntax fragments are illustrative skeletons showing declaration form only.
-4. Focus on: type names, trait names, ownership keywords, idiomatic declaration patterns.
-5. Do NOT explain things the user already knows from C++ - focus on the Rust side.
-6. Do NOT write prose or markdown. Output only valid Rust comment syntax.
+const SYSTEM_PROMPT = `You are a Rust learning assistant for a C++ programmer.
 
-OUTPUT FORMAT - follow this exactly for each detected C++ feature:
-// [C++ feature] → [Rust equivalent]
-// Hint: [short declaration skeleton, 1-3 lines]
-// Note: [one key semantic difference]
-//
+STRICT OUTPUT CONTRACT — obey exactly:
+1. Output is valid Markdown with one "## <C++ feature>" heading per detected feature.
+2. Each heading MUST be followed on the same line by an HTML comment anchor of the form: <!-- anchor: cpp-line-N --> where N is the 1-based C++ source line where the feature appears.
+3. The body under each heading is ONLY Rust line comments (lines starting with //). At most 3 lines per hint. No prose, no fenced code blocks, no function bodies, no full implementations.
+4. Emit a section ONLY for features actually present in the supplied C++ source.
+5. The LAST line of the response MUST be exactly one trailer of the form: <!-- deps: crate1,crate2 --> listing recommended Rust crates inferred from the C++ code. Empty list is "<!-- deps: -->". No other text may follow the trailer.
 
-EXAMPLE for input containing std::vector<int> and a lambda:
+EXAMPLE:
+## std::vector<int>  <!-- anchor: cpp-line-12 -->
 // std::vector<int> → Vec<i32>
 // Hint: let mut v: Vec<i32> = Vec::new();
-//       let v = vec![1, 2, 3];
-// Note: v[i] panics on out-of-bounds; use v.get(i) → Option<&i32>
-//
-// Lambda [] (int x) { return x*2; } → Closure |x: i32| x * 2
-// Hint: let f = |x: i32| x * 2;
-//       let f = move |x: i32| x + captured;
-// Note: closures implement Fn / FnMut / FnOnce depending on capture
-//
+// Note: v[i] panics on OOB; use v.get(i) → Option<&i32>
 
-Only output entries for features actually present in the provided C++ code. No preamble, no summary.`;
+## Lambda  <!-- anchor: cpp-line-18 -->
+// Lambda → Closure
+// Hint: let f = |x: i32| x * 2;
+// Note: Fn / FnMut / FnOnce depending on capture
+
+<!-- deps: -->`;
 
 export class LlmClient {
-  private available: boolean = true;
-  private cooldownUntil: number = 0;
+  constructor(private endpoint: string, private model: string) {}
 
-  constructor(
-    private endpoint: string,
-    private model: string
-  ) {}
+  updateConfig(endpoint: string, model: string): void {
+    this.endpoint = endpoint;
+    this.model = model;
+  }
 
-  async translate(cppSource: string): Promise<string | null> {
-    // Check cooldown after previous failure
-    if (!this.available && Date.now() < this.cooldownUntil) {
-      return null;
+  getEndpoint(): string {
+    return this.endpoint;
+  }
+
+  getModel(): string {
+    return this.model;
+  }
+
+  async healthCheck(): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const res = await fetch(`${this.endpoint}/v1/models`, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
     }
+  }
 
+  async translate(cppSource: string): Promise<LlmResult | null> {
     const input = cppSource.slice(0, MAX_INPUT_CHARS);
-    const messages = this.buildMessages(input);
+    const messages: ChatMessage[] = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `C++ source (line numbers are 1-based):\n\n\`\`\`cpp\n${input}\n\`\`\``,
+      },
+    ];
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -78,65 +90,57 @@ export class LlmClient {
         body: JSON.stringify({
           model: this.model,
           messages,
-          temperature: 0.6,
+          temperature: 0.4,
           top_p: 0.95,
-          top_k: 20,
           stream: false,
-          max_tokens: 1024,
+          max_tokens: 1536,
           chat_template_kwargs: { enable_thinking: false },
         }),
         signal: controller.signal,
       });
 
-      clearTimeout(timer);
-
-      if (!response.ok) {
-        this.markUnavailable();
-        return null;
-      }
+      if (!response.ok) return null;
 
       const data = (await response.json()) as ChatResponse;
-      const cleaned = (data.choices?.[0]?.message?.content ?? '').trim();
+      const content = (data.choices?.[0]?.message?.content ?? '').trim();
+      if (!content) return null;
 
-      this.available = true;
-      return cleaned.length > 0 ? this.wrapOutput(cleaned) : null;
-
+      return parseLlmResponse(content);
     } catch {
-      clearTimeout(timer);
-      this.markUnavailable();
       return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+export function parseLlmResponse(content: string): LlmResult {
+  const lines = content.split(/\r?\n/);
+  // Find last non-empty line
+  let lastIdx = lines.length - 1;
+  while (lastIdx >= 0 && lines[lastIdx].trim() === '') lastIdx--;
+
+  const depsRe = /^<!--\s*deps:\s*(.*?)\s*-->\s*$/;
+  let deps: string[] = [];
+  let depsTrailerPresent = false;
+  let bodyEnd = lines.length;
+
+  if (lastIdx >= 0) {
+    const m = depsRe.exec(lines[lastIdx].trim());
+    if (m) {
+      depsTrailerPresent = true;
+      deps = m[1]
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      bodyEnd = lastIdx;
     }
   }
 
-  private markUnavailable(): void {
-    this.available = false;
-    this.cooldownUntil = Date.now() + COOLDOWN_MS;
+  if (!depsTrailerPresent) {
+    console.warn('[cppToRust] LLM response missing <!-- deps: ... --> trailer; treating as no deps');
   }
 
-  private buildMessages(cppSource: string): ChatMessage[] {
-    return [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: `Identify the C++ features in this code and provide their Rust equivalents with syntax hints:\n\n\`\`\`cpp\n${cppSource}\n\`\`\``,
-      },
-    ];
-  }
-
-  private wrapOutput(content: string): string {
-    return `// C++ to Rust Translator (LLM-powered)
-// Local model: ${this.model}
-// Concepts detected in your C++ code:
-//
-${content}
-`;
-  }
-
-  updateConfig(endpoint: string, model: string): void {
-    this.endpoint = endpoint;
-    this.model = model;
-    // Reset availability so new config is retried immediately
-    this.available = true;
-    this.cooldownUntil = 0;
-  }
+  const hintsMarkdown = lines.slice(0, bodyEnd).join('\n').trimEnd();
+  return { hintsMarkdown, deps, depsTrailerPresent };
 }

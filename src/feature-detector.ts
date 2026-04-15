@@ -1,286 +1,311 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { detectFeatures, generateRustContent } from './concept-mapper';
 import { LlmClient } from './llm-client';
+import { CargoMirror, resolveTargetForFile } from './cargo-mirror';
 
-const DEBOUNCE_MS = 300;
+const CPP_LANGUAGES = ['cpp', 'c', 'cuda-cpp'];
 
-/**
- * Feature Detector - Monitors C++ documents and generates Rust translations.
- * Uses local LLM (llama-server) when available, falls back to static regex.
- */
+type StatusState = 'online' | 'thinking' | 'offline' | 'disabled';
+
+interface HintSection {
+  line: number; // 1-based
+  heading: string;
+  body: string; // the full markdown section (heading + body lines)
+}
+
+interface HintsCache {
+  sections: HintSection[];
+  byLine: Map<number, HintSection>;
+}
+
 export class FeatureDetector {
   private disposables: vscode.Disposable[] = [];
-  private autoUpdate: boolean = true;
-  private showSyntaxHints: boolean = true;
-  private showConceptualMapping: boolean = true;
   private sideBySide: boolean = true;
   private llmEnabled: boolean = true;
   private llmEndpoint: string = 'http://localhost:8001';
   private llmModel: string = 'unsloth/Qwen3.5-35B-A3B';
-  private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
-  private openedRustFiles: Set<string> = new Set();
-  private llmClient: LlmClient | null = null;
-  private statusBar: vscode.StatusBarItem;
+  private healthCheckIntervalMs: number = 30000;
 
-  constructor(private context: vscode.ExtensionContext) {
-    this.statusBar = vscode.window.createStatusBarItem(
-      vscode.StatusBarAlignment.Left,
-      100
-    );
+  private llmClient: LlmClient = new LlmClient(this.llmEndpoint, this.llmModel);
+  private cargoMirror: CargoMirror = new CargoMirror();
+
+  private statusBar: vscode.StatusBarItem;
+  private healthTimer: NodeJS.Timeout | null = null;
+  private currentStatus: StatusState = 'offline';
+
+  private openedHintsFiles: Set<string> = new Set();
+  private hintsByCppUri: Map<string, HintsCache> = new Map();
+
+  constructor(_context: vscode.ExtensionContext) {
+    this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    this.statusBar.command = 'cppToRust.retryHealth';
     this.loadSettings();
   }
 
   private loadSettings(): void {
-    const config = vscode.workspace.getConfiguration('cppToRust');
-    this.autoUpdate = config.get('autoUpdate', true);
-    this.showSyntaxHints = config.get('showSyntaxHints', true);
-    this.showConceptualMapping = config.get('showConceptualMapping', true);
-    this.sideBySide = config.get('sideBySide', true);
-    this.llmEnabled = config.get('llmEnabled', true);
-    this.llmEndpoint = config.get('llmEndpoint', 'http://localhost:8001');
-    this.llmModel = config.get('llmModel', 'unsloth/Qwen3.5-35B-A3B');
-
-    if (this.llmEnabled) {
-      if (this.llmClient) {
-        this.llmClient.updateConfig(this.llmEndpoint, this.llmModel);
-      } else {
-        this.llmClient = new LlmClient(this.llmEndpoint, this.llmModel);
-      }
-    } else {
-      this.llmClient = null;
-    }
+    const cfg = vscode.workspace.getConfiguration('cppToRust');
+    this.sideBySide = cfg.get('sideBySide', true);
+    this.llmEnabled = cfg.get('llmEnabled', true);
+    this.llmEndpoint = cfg.get('llmEndpoint', 'http://localhost:8001');
+    this.llmModel = cfg.get('llmModel', 'unsloth/Qwen3.5-35B-A3B');
+    this.healthCheckIntervalMs = cfg.get('healthCheckIntervalMs', 30000);
+    this.llmClient.updateConfig(this.llmEndpoint, this.llmModel);
   }
 
   public activate(): void {
     this.loadSettings();
 
-    // Listen to document changes
-    const changeDisposable = vscode.workspace.onDidChangeTextDocument(
-      (event) => {
-        if (this.autoUpdate && this.isCppFile(event.document)) {
-          this.scheduleProcess(event.document);
-        }
-      }
-    );
+    const saveDisp = vscode.workspace.onDidSaveTextDocument((doc) => {
+      if (this.isCppFile(doc)) void this.processDocument(doc);
+    });
 
-    // Listen to active editor changes
-    const editorDisposable = vscode.window.onDidChangeActiveTextEditor(
-      (editor) => {
-        if (editor && this.isCppFile(editor.document)) {
-          if (this.sideBySide) {
-            void this.openRustEditor(editor.document);
+    const activeDisp = vscode.window.onDidChangeActiveTextEditor(() => {
+      this.updateHealthTimer();
+      this.renderStatus();
+    });
+
+    const configDisp = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('cppToRust')) {
+        this.loadSettings();
+        this.updateHealthTimer();
+        this.renderStatus();
+      }
+    });
+
+    const closeDisp = vscode.workspace.onDidCloseTextDocument((doc) => {
+      const uriStr = doc.uri.toString();
+      if (this.isCppFile(doc) && this.openedHintsFiles.has(uriStr)) {
+        this.openedHintsFiles.delete(uriStr);
+        const hintsUri = vscode.Uri.file(hintsPathFor(doc.uri.fsPath));
+        // close any editor tab for the sibling hints file
+        for (const group of vscode.window.tabGroups.all) {
+          for (const tab of group.tabs) {
+            const input = tab.input as { uri?: vscode.Uri } | undefined;
+            if (input?.uri && input.uri.toString() === hintsUri.toString()) {
+              void vscode.window.tabGroups.close(tab);
+            }
           }
         }
       }
+    });
+
+    const hoverDisp = vscode.languages.registerHoverProvider(
+      CPP_LANGUAGES.map((language) => ({ scheme: 'file', language })),
+      { provideHover: (doc, pos) => this.provideHover(doc, pos) }
     );
 
-    // Listen to configuration changes
-    const configDisposable = vscode.workspace.onDidChangeConfiguration(
-      (event) => {
-        if (event.affectsConfiguration('cppToRust')) {
-          this.loadSettings();
-          void this.processAllCppFiles();
-        }
-      }
-    );
+    this.disposables.push(saveDisp, activeDisp, configDisp, closeDisp, hoverDisp, this.statusBar);
 
-    this.disposables.push(
-      changeDisposable,
-      editorDisposable,
-      configDisposable,
-      this.statusBar
-    );
+    this.updateHealthTimer();
+    this.renderStatus();
+    void this.runHealthCheck();
   }
 
   public deactivate(): void {
-    for (const timer of this.debounceTimers.values()) {
-      clearTimeout(timer);
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
     }
-    this.debounceTimers.clear();
-    for (const disposable of this.disposables) {
-      disposable.dispose();
-    }
+    for (const d of this.disposables) d.dispose();
     this.disposables = [];
   }
 
-  private scheduleProcess(document: vscode.TextDocument): void {
-    const key = document.uri.toString();
-    const existing = this.debounceTimers.get(key);
-    if (existing) {
-      clearTimeout(existing);
-    }
-    const timer = setTimeout(() => {
-      this.debounceTimers.delete(key);
-      void this.processDocument(document);
-    }, DEBOUNCE_MS);
-    this.debounceTimers.set(key, timer);
+  private isCppFile(doc: vscode.TextDocument): boolean {
+    return CPP_LANGUAGES.includes(doc.languageId);
   }
 
-  private isCppFile(document: vscode.TextDocument): boolean {
-    const cppLanguages = ['cpp', 'c', 'cuda-cpp'];
-    return cppLanguages.includes(document.languageId);
+  private activeIsCpp(): boolean {
+    const ed = vscode.window.activeTextEditor;
+    return !!ed && this.isCppFile(ed.document);
   }
 
-  private async processDocument(document: vscode.TextDocument): Promise<void> {
-    try {
-      const content = document.getText();
-      let rustContent: string;
+  // ---------- Status bar / health ----------
 
-      if (this.llmEnabled && this.llmClient) {
-        // Try LLM first
-        this.statusBar.text = '$(sync~spin) C++→Rust: LLM thinking...';
-        this.statusBar.show();
-
-        const llmResult = await this.llmClient.translate(content);
-
-        this.statusBar.hide();
-
-        if (llmResult !== null) {
-          rustContent = llmResult;
-        } else {
-          // LLM unavailable — fall back to regex
-          rustContent = this.staticTranslate(content);
-        }
-      } else {
-        rustContent = this.staticTranslate(content);
-      }
-
-      await this.writeRustFile(document, rustContent);
-
-      // Open side-by-side only once per C++ file
-      if (this.sideBySide && !this.openedRustFiles.has(document.uri.toString())) {
-        await this.openRustEditor(document);
-      }
-    } catch (error) {
-      this.statusBar.hide();
-      console.error('Error processing C++ document:', error);
-    }
+  private setStatus(s: StatusState): void {
+    this.currentStatus = s;
+    this.renderStatus();
   }
 
-  private staticTranslate(content: string): string {
-    const detectedFeatures = detectFeatures(content);
-    return generateRustContent(
-      detectedFeatures,
-      this.showSyntaxHints,
-      this.showConceptualMapping
-    );
-  }
-
-  private async writeRustFile(
-    document: vscode.TextDocument,
-    content: string
-  ): Promise<void> {
-    const cppPath = document.uri.fsPath;
-    const rustPath = cppPath.replace(/\.(cpp|c|cc|cxx|hpp|hxx)$/, '.rs');
-    const rustUri = vscode.Uri.file(rustPath);
-
-    try {
-      const parentDir = vscode.Uri.file(path.dirname(rustPath));
-      await vscode.workspace.fs.createDirectory(parentDir);
-      const encodedContent = Buffer.from(content, 'utf8');
-      await vscode.workspace.fs.writeFile(rustUri, encodedContent);
-      console.log(`Updated Rust file: ${rustPath}`);
-    } catch (error) {
-      if (this.isInWorkspace(document.uri)) {
-        await this.writeToWorkspace(document.uri, content);
-      } else {
-        console.error('Error writing Rust file:', error);
+  private renderStatus(): void {
+    if (!this.llmEnabled) {
+      this.statusBar.text = '$(circle-slash) C++→Rust: disabled';
+    } else {
+      switch (this.currentStatus) {
+        case 'online':   this.statusBar.text = '$(check) C++→Rust: online'; break;
+        case 'thinking': this.statusBar.text = '$(sync~spin) C++→Rust: thinking…'; break;
+        case 'offline':  this.statusBar.text = '$(error) C++→Rust: offline'; break;
+        case 'disabled': this.statusBar.text = '$(circle-slash) C++→Rust: disabled'; break;
       }
     }
+    if (this.activeIsCpp()) this.statusBar.show();
+    else this.statusBar.hide();
   }
 
-  private isInWorkspace(uri: vscode.Uri): boolean {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) return false;
-    return workspaceFolders.some((folder) =>
-      uri.fsPath.startsWith(folder.uri.fsPath)
-    );
-  }
-
-  private async writeToWorkspace(uri: vscode.Uri, content: string): Promise<void> {
-    const rustPath = uri.fsPath.replace(/\.(cpp|c|cc|cxx|hpp|hxx)$/, '.rs');
-    const rustUri = vscode.Uri.file(rustPath);
-    try {
-      const parentDir = vscode.Uri.file(path.dirname(rustPath));
-      await vscode.workspace.fs.createDirectory(parentDir);
-      const encodedContent = Buffer.from(content, 'utf8');
-      await vscode.workspace.fs.writeFile(rustUri, encodedContent);
-    } catch (error) {
-      console.error('Error writing to workspace:', error);
+  private updateHealthTimer(): void {
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
     }
+    if (!this.llmEnabled) return;
+    this.healthTimer = setInterval(() => {
+      if (this.activeIsCpp() && this.currentStatus !== 'thinking') void this.runHealthCheck();
+    }, this.healthCheckIntervalMs);
   }
 
-  private async openRustEditor(document: vscode.TextDocument): Promise<void> {
-    const cppPath = document.uri.fsPath;
-    const rustPath = cppPath.replace(/\.(cpp|c|cc|cxx|hpp|hxx)$/, '.rs');
-    const rustUri = vscode.Uri.file(rustPath);
+  public async runHealthCheck(): Promise<void> {
+    if (!this.llmEnabled) {
+      this.setStatus('disabled');
+      return;
+    }
+    const ok = await this.llmClient.healthCheck();
+    if (this.currentStatus === 'thinking') return;
+    this.setStatus(ok ? 'online' : 'offline');
+  }
 
+  // ---------- Core processing ----------
+
+  private async processDocument(doc: vscode.TextDocument): Promise<void> {
+    if (!this.llmEnabled) {
+      this.setStatus('disabled');
+      return;
+    }
+
+    this.setStatus('thinking');
+    const result = await this.llmClient.translate(doc.getText());
+    if (!result) {
+      this.setStatus('offline');
+      return;
+    }
+    this.setStatus('online');
+
+    const hintsMd = buildHintsFile(doc.uri.fsPath, this.llmModel, result.hintsMarkdown);
+    await writeHintsFile(doc.uri.fsPath, hintsMd);
+    this.hintsByCppUri.set(doc.uri.toString(), parseHints(result.hintsMarkdown));
+
+    if (this.sideBySide && !this.openedHintsFiles.has(doc.uri.toString())) {
+      await this.openHintsEditor(doc);
+    }
+
+    this.cargoMirror.scheduleSync(doc.uri.fsPath, result.deps);
+  }
+
+  private async openHintsEditor(doc: vscode.TextDocument): Promise<void> {
+    const hintsUri = vscode.Uri.file(hintsPathFor(doc.uri.fsPath));
     try {
-      try {
-        await vscode.workspace.fs.stat(rustUri);
-      } catch {
-        await this.writeRustFile(document, '// Rust translation will appear here\n');
-      }
-
-      const doc = await vscode.workspace.openTextDocument(rustUri);
-      await vscode.window.showTextDocument(doc, {
+      await vscode.workspace.fs.stat(hintsUri);
+      const openDoc = await vscode.workspace.openTextDocument(hintsUri);
+      await vscode.window.showTextDocument(openDoc, {
         viewColumn: vscode.ViewColumn.Beside,
         preserveFocus: true,
         preview: false,
       });
-      this.openedRustFiles.add(document.uri.toString());
-    } catch (error) {
-      console.error('Error opening Rust editor:', error);
+      this.openedHintsFiles.add(doc.uri.toString());
+    } catch (err) {
+      console.error('[cppToRust] open hints failed:', err);
     }
   }
 
-  private async processAllCppFiles(): Promise<void> {
-    const documents = vscode.workspace.textDocuments;
-    for (const doc of documents) {
-      if (this.isCppFile(doc)) {
-        await this.processDocument(doc);
-      }
-    }
+  private provideHover(doc: vscode.TextDocument, pos: vscode.Position): vscode.Hover | null {
+    if (!this.isCppFile(doc)) return null;
+    const cache = this.hintsByCppUri.get(doc.uri.toString());
+    if (!cache) return null;
+    const section = cache.byLine.get(pos.line + 1);
+    if (!section) return null;
+    const md = new vscode.MarkdownString(section.body);
+    md.isTrusted = false;
+    return new vscode.Hover(md);
   }
 
-  public async translateCurrentFile(): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || !this.isCppFile(editor.document)) {
-      vscode.window.showWarningMessage(
-        'No C++ file open. Please open a C++ file first.'
-      );
+  // ---------- Commands ----------
+
+  public async refreshHints(): Promise<void> {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || !this.isCppFile(ed.document)) {
+      vscode.window.showWarningMessage('Open a C++ file first.');
       return;
     }
-    await this.processDocument(editor.document);
-    vscode.window.showInformationMessage('C++ to Rust translation complete!');
+    await this.processDocument(ed.document);
   }
 
-  public async openRustEditorForCurrent(): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || !this.isCppFile(editor.document)) {
-      vscode.window.showWarningMessage(
-        'No C++ file open. Please open a C++ file first.'
-      );
+  public async openHints(): Promise<void> {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || !this.isCppFile(ed.document)) {
+      vscode.window.showWarningMessage('Open a C++ file first.');
       return;
     }
-    await this.openRustEditor(editor.document);
+    await this.openHintsEditor(ed.document);
   }
 
-  public async toggleAutoUpdate(): Promise<void> {
-    const config = vscode.workspace.getConfiguration('cppToRust');
-    const newValue = !config.get('autoUpdate', true);
-    await config.update('autoUpdate', newValue, vscode.ConfigurationTarget.Global);
-    this.autoUpdate = newValue;
+  public async toggleEnabled(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('cppToRust');
+    const next = !cfg.get('llmEnabled', true);
+    await cfg.update('llmEnabled', next, vscode.ConfigurationTarget.Global);
+    this.llmEnabled = next;
+    this.updateHealthTimer();
+    if (next) void this.runHealthCheck();
+    else this.setStatus('disabled');
+    vscode.window.showInformationMessage(`C++→Rust: ${next ? 'enabled' : 'disabled'}`);
+  }
 
-    if (newValue) {
-      vscode.window.showInformationMessage('C++→Rust: Auto-update enabled');
-      const editor = vscode.window.activeTextEditor;
-      if (editor && this.isCppFile(editor.document)) {
-        await this.processDocument(editor.document);
-      }
-    } else {
-      vscode.window.showInformationMessage('C++→Rust: Auto-update disabled');
+  public async openCargoProject(): Promise<void> {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || !this.isCppFile(ed.document)) {
+      vscode.window.showWarningMessage('Open a C++ file first.');
+      return;
+    }
+    const target = resolveTargetForFile(ed.document.uri.fsPath);
+    if (!target) {
+      vscode.window.showWarningMessage('No CMakeLists.txt ancestor found for this file.');
+      return;
+    }
+    await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(target.rustRoot), { forceNewWindow: true });
+  }
+}
+
+// ---------- File helpers ----------
+
+function hintsPathFor(cppPath: string): string {
+  const dir = path.dirname(cppPath);
+  const base = path.basename(cppPath);
+  return path.join(dir, `${base}.hints.md`);
+}
+
+function buildHintsFile(cppPath: string, model: string, body: string): string {
+  const ts = new Date().toISOString();
+  const base = path.basename(cppPath);
+  return `# Rust Hints for ${base}\n<!-- generated: ${ts} -->\n<!-- model: ${model} -->\n\n${body.trim()}\n`;
+}
+
+async function writeHintsFile(cppPath: string, content: string): Promise<void> {
+  const uri = vscode.Uri.file(hintsPathFor(cppPath));
+  await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+}
+
+// ---------- Hint parsing ----------
+
+export function parseHints(markdown: string): HintsCache {
+  const sections: HintSection[] = [];
+  const lines = markdown.split(/\r?\n/);
+  const headingRe = /^##\s+(.+?)\s*<!--\s*anchor:\s*cpp-line-(\d+)\s*-->\s*$/;
+
+  let current: { heading: string; line: number; startIdx: number } | null = null;
+
+  const flush = (endIdx: number) => {
+    if (!current) return;
+    const body = lines.slice(current.startIdx, endIdx).join('\n').trimEnd();
+    sections.push({ heading: current.heading, line: current.line, body });
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = headingRe.exec(lines[i]);
+    if (m) {
+      flush(i);
+      current = { heading: m[1].trim(), line: parseInt(m[2], 10), startIdx: i };
     }
   }
+  flush(lines.length);
+
+  const byLine = new Map<number, HintSection>();
+  for (const s of sections) byLine.set(s.line, s);
+  return { sections, byLine };
 }
