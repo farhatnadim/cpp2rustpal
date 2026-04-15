@@ -1,0 +1,97 @@
+{
+  "name": "cpp2rustpal",
+  "displayName": "Pal — C++ to Rust",
+  "description": "Real-time C++ to Rust concept translator - shows Rust equivalents and syntax hints as you write C++",
+  "version": "0.1.0",
+  "publisher": "rust-cpp-translator",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/farhatnadim/cpp2rustpal"
+  },
+  "engines": {
+    "vscode": "^1.76.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:cpp",
+    "onLanguage:c",
+    "onLanguage:cuda-cpp"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cppToRust.translate",
+        "title": "C++ to Rust: Translate Current File"
+      },
+      {
+        "command": "cppToRust.openRustEditor",
+        "title": "C++ to Rust: Open Rust Editor"
+      },
+      {
+        "command": "cppToRust.toggleAutoUpdate",
+        "title": "C++ to Rust: Toggle Auto-Update"
+      }
+    ],
+    "configuration": {
+      "title": "C++ to Rust Translator",
+      "properties": {
+        "cppToRust.autoUpdate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically update Rust file as you type in C++"
+        },
+        "cppToRust.showSyntaxHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include syntax hints in the Rust output"
+        },
+        "cppToRust.showConceptualMapping": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include conceptual mapping comments"
+        },
+        "cppToRust.sideBySide": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open Rust file in side-by-side editor"
+        },
+        "cppToRust.llmEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use local LLM (llama-server) for translation when available; falls back to static regex if unreachable"
+        },
+        "cppToRust.llmEndpoint": {
+          "type": "string",
+          "default": "http://localhost:8001",
+          "description": "Base URL of the llama-server OpenAI-compatible API"
+        },
+        "cppToRust.llmModel": {
+          "type": "string",
+          "default": "unsloth/Qwen3.5-35B-A3B",
+          "description": "Model alias to send in chat completions requests"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/vscode": "^1.76.0",
+    "@types/node": "18.x",
+    "typescript": "^5.0.4",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.45.0"
+  }
+}
