@@ -6,7 +6,7 @@ Assist a C++ engineer learning Rust by surfacing **contextual Rust hints** for t
 
 ## Core Principles
 
-1. **LLM-only**: No regex fallback. If the local LLM server is unreachable, the extension shows an offline indicator and does nothing else.
+1. **LLM-only**: If the local LLM server is unreachable, the extension shows an offline indicator and does nothing else.
 2. **Non-destructive**: The extension never overwrites user-authored files.
 3. **Hints are ephemeral**: Only hints relevant to the **current C++ file's current contents** are kept. Removing `std::vector` from the C++ file removes the `Vec<T>` hint.
 4. **Hover-driven discovery**: Hovering a C++ construct highlights (or reveals) the matching hint.
@@ -20,10 +20,8 @@ Assist a C++ engineer learning Rust by surfacing **contextual Rust hints** for t
 
 ## Files & Storage
 
-- For a C++ file `foo.cpp`, hints are written to a sibling file **`foo.hints.md`** (Markdown, not `.rs`).
-- Rationale: Markdown renders nicely in the side pane, avoids Rust-file confusion, and is clearly a generated artifact.
+- For a C++ file `foo.cpp`, hints are written to a sibling file **`foo.cpp.hints.md`**. The full C++ extension is preserved in the hints filename so `foo.cpp` and `foo.h` do not collide.
 - The `.hints.md` file is **fully regenerated** on each save — no merging, because all hints are derived from current C++ content only.
-- The user's own `.rs` scratch file (if any) is never touched by the extension.
 
 ### `.hints.md` structure
 
@@ -84,7 +82,7 @@ Health check: `GET {endpoint}/v1/models` every 30s while a C++ file is the activ
 - Endpoint: `{cppToRust.llmEndpoint}/v1/chat/completions` (OpenAI-compatible).
 - Model: `{cppToRust.llmModel}`.
 - Request body includes `chat_template_kwargs: { enable_thinking: false }`.
-- Timeout: 15s per request. On failure, state → offline; no fallback.
+- Timeout: 15s per request. On failure, state → offline.
 
 ### System prompt requirements
 
@@ -105,8 +103,6 @@ Output **must**:
 | `cppToRust.openCargoProject` | Open the mirrored `rust_<name>/` folder in a new VS Code window |
 | `cppToRust.pickModel` | Pick a model from `/v1/models` (falls back to free-text input when offline); saves to workspace settings |
 
-(Remove the old `translate` / `openRustEditor` / `toggleAutoUpdate` commands.)
-
 ## Settings
 
 | Key | Default | Notes |
@@ -118,20 +114,7 @@ Output **must**:
 | `cppToRust.healthCheckIntervalMs` | `30000` | Status bar poll cadence |
 | `cppToRust.cargoMirrorEnabled` | `true` | Scaffold and maintain `rust_<name>/` next to each detected `cpp_<name>/` |
 
-(Remove `autoUpdate`, `showSyntaxHints`, `showConceptualMapping`.)
-
-## Removed vs. Current Behavior
-
-- ❌ Regex-based `concept-mapper.ts` + `feature-detector.ts` pattern code — delete.
-- ❌ On-change debounced writes — replaced by on-save.
-- ❌ **Sibling `.rs` writes beside C++ files are forbidden.** Delete `writeRustFile()` in `src/feature-detector.ts` and all its callers. Hints live exclusively in `foo.hints.md`. The only `.rs` files the extension ever touches are those produced by `cargo new` inside `rust_<name>/`, and they are never rewritten after creation.
-- ❌ "Static translate" fallback path — gone.
-- ✅ LLM client (`llm-client.ts`) — kept; system prompt updated to the Markdown+anchors contract.
-
 ## Open Questions
 
-1. Should hover matching be line-anchored (simple) or range-anchored (needs richer output from LLM)? Start line-anchored.
-2. Should `.hints.md` auto-close when the C++ file closes? Probably yes — track like current `openedRustFiles`.
-3. Cache last successful hints per file in memory, so rapid saves without LLM changes don't re-render? Defer.
-4. `cargo add` concurrency: currently fire-and-forget per save. If saves arrive faster than `cargo add` completes, do we serialize per `rust_<name>/` or drop overlapping runs? Default: serialize per target directory.
-5. If the LLM omits the `<!-- deps: ... -->` trailer, should the extension treat it as "no deps" or as a malformed response (→ offline)? Default: treat as no deps, log a warning.
+1. Should hover matching be line-anchored (simple) or range-anchored (needs richer output from LLM)? Currently line-anchored.
+2. Cache last successful hints per file in memory, so rapid saves without LLM changes don't re-render? Defer.

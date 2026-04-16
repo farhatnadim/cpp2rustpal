@@ -35,9 +35,23 @@ See `SPEC.md` for the full contract.
 
 Bodies are `//` Rust comment lines only; hints are capped at three lines each and never contain full function bodies.
 
-## LLM server
+## Install (Linux + CUDA)
 
-Pal assumes a locally running `llama-server` exposing an OpenAI-compatible API at `cppToRust.llmEndpoint` (default `http://localhost:8001`). The default model alias is `unsloth/Qwen3.5-35B-A3B`. See `INSTALL.md` and `setup.sh` for host setup.
+One command bootstraps everything except starting the server:
+
+```bash
+./install.sh
+```
+
+It runs preflight checks, builds `llama.cpp`, pre-fetches the GGUF into `$HOME/.cache/llama.cpp`, compiles the extension, packages it, and installs the VSIX via `code --install-extension`. Re-running is idempotent — already-built pieces are skipped. See [`INSTALL.md`](./INSTALL.md) for flags and env overrides.
+
+After install, start the server in its own terminal:
+
+```bash
+scripts/run-llama-server.sh
+```
+
+Open a `.cpp` file in VS Code — the status bar flips to online within 30 s. See [`scripts/README.md`](./scripts/README.md) for server env knobs.
 
 ## Install
 
