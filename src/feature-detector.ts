@@ -30,6 +30,7 @@ export class FeatureDetector {
   private cargoMirror: CargoMirror = new CargoMirror();
 
   private statusBar: vscode.StatusBarItem;
+  private modelBar: vscode.StatusBarItem;
   private healthTimer: NodeJS.Timeout | null = null;
   private currentStatus: StatusState = 'offline';
 
@@ -39,6 +40,9 @@ export class FeatureDetector {
   constructor(_context: vscode.ExtensionContext) {
     this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     this.statusBar.command = 'cppToRust.retryHealth';
+    this.modelBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    this.modelBar.command = 'cppToRust.pickModel';
+    this.modelBar.tooltip = 'Pick LLM model';
     this.loadSettings();
   }
 
@@ -94,7 +98,7 @@ export class FeatureDetector {
       { provideHover: (doc, pos) => this.provideHover(doc, pos) }
     );
 
-    this.disposables.push(saveDisp, activeDisp, configDisp, closeDisp, hoverDisp, this.statusBar);
+    this.disposables.push(saveDisp, activeDisp, configDisp, closeDisp, hoverDisp, this.statusBar, this.modelBar);
 
     this.updateHealthTimer();
     this.renderStatus();
@@ -137,8 +141,12 @@ export class FeatureDetector {
         case 'disabled': this.statusBar.text = '$(circle-slash) C++→Rust: disabled'; break;
       }
     }
-    if (this.activeIsCpp()) this.statusBar.show();
-    else this.statusBar.hide();
+    this.modelBar.text = `$(gear) ${shortModelLabel(this.llmModel)}`;
+    this.modelBar.tooltip = `LLM model: ${this.llmModel} (click to change)`;
+
+    const showBars = this.activeIsCpp();
+    if (showBars) this.statusBar.show(); else this.statusBar.hide();
+    if (showBars && this.llmEnabled) this.modelBar.show(); else this.modelBar.hide();
   }
 
   private updateHealthTimer(): void {
@@ -247,6 +255,42 @@ export class FeatureDetector {
     vscode.window.showInformationMessage(`C++→Rust: ${next ? 'enabled' : 'disabled'}`);
   }
 
+  public async pickModel(): Promise<void> {
+    const current = this.llmModel;
+    const ids = await this.llmClient.listModels();
+
+    let chosen: string | undefined;
+    if (ids.length > 0) {
+      const items: vscode.QuickPickItem[] = ids.map((id) => ({
+        label: id,
+        description: id === current ? '(current)' : undefined,
+      }));
+      const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Pick LLM model',
+        matchOnDescription: true,
+      });
+      chosen = picked?.label;
+    } else {
+      chosen = await vscode.window.showInputBox({
+        value: current,
+        prompt: 'Server offline or no models returned — enter model alias manually',
+      });
+    }
+
+    if (!chosen || chosen === current) return;
+
+    const hasWorkspace = !!vscode.workspace.workspaceFolders?.length;
+    const target = hasWorkspace
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    if (!hasWorkspace) {
+      vscode.window.showInformationMessage('No workspace open — saved model to user settings.');
+    }
+
+    await vscode.workspace.getConfiguration('cppToRust').update('llmModel', chosen, target);
+    void this.runHealthCheck();
+  }
+
   public async openCargoProject(): Promise<void> {
     const ed = vscode.window.activeTextEditor;
     if (!ed || !this.isCppFile(ed.document)) {
@@ -268,6 +312,13 @@ function hintsPathFor(cppPath: string): string {
   const dir = path.dirname(cppPath);
   const base = path.basename(cppPath);
   return path.join(dir, `${base}.hints.md`);
+}
+
+function shortModelLabel(model: string): string {
+  const tail = model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model;
+  const MAX = 30;
+  if (tail.length <= MAX) return tail;
+  return `${tail.slice(0, 14)}…${tail.slice(-13)}`;
 }
 
 function buildHintsFile(cppPath: string, model: string, body: string): string {

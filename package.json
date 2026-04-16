@@ -39,6 +39,10 @@
       {
         "command": "cppToRust.openCargoProject",
         "title": "C++ to Rust: Open Mirrored Cargo Project"
+      },
+      {
+        "command": "cppToRust.pickModel",
+        "title": "C++ to Rust: Pick Model"
       }
     ],
     "configuration": {

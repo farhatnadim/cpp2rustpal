@@ -70,6 +70,27 @@ export class LlmClient {
     }
   }
 
+  async listModels(): Promise<string[]> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const res = await fetch(`${this.endpoint}/v1/models`, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { data?: Array<{ id?: unknown }> };
+      if (!Array.isArray(data.data)) return [];
+      return data.data
+        .map((m) => m?.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async translate(cppSource: string): Promise<LlmResult | null> {
     const input = cppSource.slice(0, MAX_INPUT_CHARS);
     const messages: ChatMessage[] = [
@@ -141,6 +162,32 @@ export function parseLlmResponse(content: string): LlmResult {
     console.warn('[cppToRust] LLM response missing <!-- deps: ... --> trailer; treating as no deps');
   }
 
-  const hintsMarkdown = lines.slice(0, bodyEnd).join('\n').trimEnd();
+  const rawMarkdown = lines.slice(0, bodyEnd).join('\n').trimEnd();
+  const hintsMarkdown = sortSectionsByAnchor(rawMarkdown);
   return { hintsMarkdown, deps, depsTrailerPresent };
+}
+
+function sortSectionsByAnchor(markdown: string): string {
+  const headingRe = /^##\s+/m;
+  const firstHeading = markdown.search(headingRe);
+  if (firstHeading === -1) return markdown;
+
+  const preamble = markdown.slice(0, firstHeading).trimEnd();
+  const body = markdown.slice(firstHeading);
+
+  const anchorRe = /<!--\s*anchor:\s*cpp-line-(\d+)\s*-->/;
+  const rawSections = body.split(/(?=^##\s+)/m).filter((s) => s.trim().length > 0);
+  const sections = rawSections.map((text, idx) => {
+    const m = anchorRe.exec(text);
+    return {
+      text: text.trimEnd(),
+      line: m ? parseInt(m[1], 10) : Number.POSITIVE_INFINITY,
+      idx,
+    };
+  });
+  sections.sort((a, b) => a.line - b.line || a.idx - b.idx);
+
+  return [preamble, ...sections.map((s) => s.text)]
+    .filter((s) => s.length > 0)
+    .join('\n\n');
 }

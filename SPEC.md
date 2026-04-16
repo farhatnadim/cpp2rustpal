@@ -45,6 +45,8 @@ Assist a C++ engineer learning Rust by surfacing **contextual Rust hints** for t
 
 Each section has an `<!-- anchor: cpp-line-N -->` pointing at the C++ line where the construct was detected. The LLM is asked to emit anchors along with hints.
 
+Sections **must** be written sorted ascending by their `cpp-line-N` anchor. If the LLM emits sections out of order (e.g., revisits an earlier line), the extension sorts them before writing. Sort is stable: sections sharing the same line number preserve LLM emission order. Sections with no parseable anchor sort to the end.
+
 ## Cargo Project Mirror
 
 For each C++ project the user is editing, the extension maintains a sibling **Cargo** project that mirrors the C++ project's location.
@@ -101,6 +103,7 @@ Output **must**:
 | `cppToRust.openHints` | Open `.hints.md` side-by-side |
 | `cppToRust.toggleEnabled` | Enable/disable the extension |
 | `cppToRust.openCargoProject` | Open the mirrored `rust_<name>/` folder in a new VS Code window |
+| `cppToRust.pickModel` | Pick a model from `/v1/models` (falls back to free-text input when offline); saves to workspace settings |
 
 (Remove the old `translate` / `openRustEditor` / `toggleAutoUpdate` commands.)
 

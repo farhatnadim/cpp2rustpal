@@ -12,6 +12,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('cppToRust.openHints', () => featureDetector?.openHints()),
     vscode.commands.registerCommand('cppToRust.toggleEnabled', () => featureDetector?.toggleEnabled()),
     vscode.commands.registerCommand('cppToRust.openCargoProject', () => featureDetector?.openCargoProject()),
+    vscode.commands.registerCommand('cppToRust.pickModel', () => featureDetector?.pickModel()),
     vscode.commands.registerCommand('cppToRust.retryHealth', () => featureDetector?.runHealthCheck())
   );
 }

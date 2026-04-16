@@ -1,195 +1,95 @@
-# C++ to Rust Translator
+# Pal — C++ to Rust (`cpp2rustpal`)
 
-A VS Code extension that provides real-time conceptual guidance when writing C++ code. As you type C++, the extension generates a `.rs` file with comments explaining which C++ concepts are being used and how they translate to Rust.
+A VS Code extension that helps C++ engineers learn Rust by surfacing contextual Rust hints for the C++ constructs in their code. On save of a C++ file, Pal asks a local LLM to identify relevant features and writes a sibling `foo.cpp.hints.md` Markdown file with short Rust hints, anchored to the C++ line where each construct appears. Hover a C++ construct to see the matching hint inline.
 
-## Features
+Pal also mirrors your C++ project as a Cargo project: if your C++ code lives in `cpp_foo/` (identified by a `CMakeLists.txt`), Pal creates and maintains a sibling `rust_foo/` Cargo crate, running `cargo add` for crates the LLM recommends (e.g. `rayon` for `<thread>`). You write the Rust yourself — Pal never overwrites your code.
 
-- **Real-time monitoring**: Automatically detects C++ features as you type
-- **Conceptual mapping**: Shows which C++ features are detected and their Rust equivalents
-- **Syntax hints**: Provides declaration patterns without writing full code
-- **Side-by-side editing**: Opens Rust file in adjacent editor pane
-- **Toggleable**: Enable/disable auto-update and customize output
+## How it works
 
-## Output Format
+- **Trigger**: on save of a `cpp`, `c`, or `cuda-cpp` file. No per-keystroke updates.
+- **Hints file**: `foo.cpp.hints.md` (sibling), fully regenerated each save. Sections are sorted ascending by C++ line number.
+- **Hover**: the extension matches the hovered line against the latest hint anchors and shows the hint as a Markdown popup.
+- **Cargo mirror**: walks up from the saved file until it finds `CMakeLists.txt`; creates a `rust_<name>/` sibling via `cargo new --bin`. Runs `cargo add` for LLM-suggested crates (fire-and-forget, serialized per target).
+- **LLM-only**: if the local LLM server is unreachable, the status bar shows `offline` and no hints are written. There is no regex fallback.
+- **Status bar**: shows `online` / `thinking…` / `offline` / `disabled`. Polls `GET {endpoint}/v1/models` every 30 s while a C++ file is active.
 
-The generated `.rs` file contains two types of comments:
+See `SPEC.md` for the full contract.
 
-### 1. Conceptual Mapping
+## Hints file format
 
-```rust
-// C++ Feature Detected: std::unique_ptr<T>
-// Rust Equivalent: Box<T>
-// Notes: Rust doesn't need a special smart pointer for exclusive ownership
-// because all values are moved by default unless cloned.
+```markdown
+# Rust Hints for foo.cpp
+<!-- generated: 2026-04-16T12:34:56Z -->
+<!-- model: unsloth/Qwen3.5-35B-A3B -->
+
+## std::vector<int>  <!-- anchor: cpp-line-12 -->
+// std::vector<int> → Vec<i32>
+// Hint: let mut v: Vec<i32> = Vec::new();
+// Note: v[i] panics on OOB; use v.get(i) → Option<&i32>
+
+## Lambda  <!-- anchor: cpp-line-18 -->
+// Lambda → Closure
+// Hint: let f = |x: i32| x * 2;
+// Note: Fn / FnMut / FnOnce depending on capture
 ```
 
-### 2. Syntax Hints
+Bodies are `//` Rust comment lines only; hints are capped at three lines each and never contain full function bodies.
 
-```rust
-// How to declare in Rust:
-// let ptr = Box::new(value);
-// let mut vec = Vec::new();
-//
-// Declaration pattern:
-// let variable: Type = Type::constructor();
-```
+## LLM server
 
-## Supported C++ Features
+Pal assumes a locally running `llama-server` exposing an OpenAI-compatible API at `cppToRust.llmEndpoint` (default `http://localhost:8001`). The default model alias is `unsloth/Qwen3.5-35B-A3B`. See `INSTALL.md` and `setup.sh` for host setup.
 
-### Smart Pointers
-- `std::unique_ptr<T>` → `Box<T>`
-- `std::shared_ptr<T>` → `Rc<T>` / `Arc<T>`
-- `std::weak_ptr<T>` → `Rc<Weak<T>>` / `Arc<Weak<T>>`
-
-### Containers
-- `std::vector<T>` → `Vec<T>`
-- `std::array<T, N>` → `[T; N]`
-- `std::map<K, V>` → `HashMap<K, V>`
-
-### Optional/Variant
-- `std::optional<T>` → `Option<T>`
-- `std::variant<T1, T2, ...>` → `enum`
-- `std::any` → `Box<dyn Any>`
-
-### Strings
-- `std::string` → `String` / `&str`
-- `std::string_view` → `&str`
-
-### Type System
-- Templates → Generics with trait bounds
-- `auto` → Type inference with `let`
-- `constexpr` → `const fn`
-
-### C++17/20 Features
-- `std::optional`, `std::variant`, `std::string_view`
-- Structured bindings
-- Concepts (C++20)
-
-### Lambdas & Closures
-- Lambda expressions → Closures (`Fn`, `FnMut`, `FnOnce`)
-
-### Move Semantics
-- `std::move()` → Implicit move in Rust
-
-### RAII
-- Destructors → `Drop` trait
-
-### Concurrency
-- `std::thread` → `std::thread::spawn()`
-- `std::mutex` → `std::sync::Mutex<T>`
-- `std::atomic<T>` → `std::sync::atomic::*`
-
-### Virtual Functions
-- `virtual` functions → Traits with dynamic dispatch
-
-## Installation
-
-1. Clone this repository
-2. Open the `cpp-to-rust-translator` folder in VS Code
-3. Run `npm install`
-4. Press `F5` to launch extension development host
-5. Install the extension from the Extension view
-
-Or build and install directly:
+## Install
 
 ```bash
+git clone git@github.com:farhatnadim/cpp2rustpal.git
+cd cpp2rustpal
 npm install
 npm run compile
-code --install-extension ./cpp-to-rust-translator.vsix
+npx vsce package
+code --install-extension cpp2rustpal-0.1.0.vsix
 ```
 
-## Configuration
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `cppToRust.autoUpdate` | `true` | Automatically update Rust file as you type |
-| `cppToRust.showSyntaxHints` | `true` | Include syntax hints in output |
-| `cppToRust.showConceptualMapping` | `true` | Include conceptual mapping comments |
-| `cppToRust.sideBySide` | `true` | Open Rust file in side-by-side editor |
+For development, press `F5` in VS Code to launch an Extension Development Host.
 
 ## Commands
 
 | Command | Description |
-|---------|-------------|
-| `C++ to Rust: Translate Current File` | Manually trigger translation of current file |
-| `C++ to Rust: Open Rust Editor` | Open/create the Rust file in side-by-side editor |
-| `C++ to Rust: Toggle Auto-Update` | Enable/disable automatic updates |
+|---|---|
+| `C++ to Rust: Refresh Hints` | Manually regenerate hints for the active C++ file |
+| `C++ to Rust: Open Hints` | Open the sibling `.hints.md` in a side-by-side editor |
+| `C++ to Rust: Toggle Enabled` | Flip the master switch (`cppToRust.llmEnabled`) |
+| `C++ to Rust: Open Mirrored Cargo Project` | Open the mirrored `rust_<name>/` folder in a new window |
+| `C++ to Rust: Pick Model` | Pick a model from `/v1/models` (or free-text entry when offline); also bound to the model status-bar item |
 
-## Usage
+## Settings
 
-1. Open a C++ file (`.cpp`, `.c`, `.hpp`, `.h`, etc.)
-2. The extension automatically monitors the file for C++ features
-3. A `.rs` file is created in the same directory
-4. The Rust file shows detected features with explanations
-5. Edit the Rust file to write your own Rust code based on the hints
-
-## Example
-
-**C++ Code:**
-```cpp
-#include <memory>
-#include <vector>
-
-int main() {
-    std::unique_ptr<int> ptr = std::make_unique<int>(42);
-    std::vector<int> vec = {1, 2, 3};
-    auto f = [](int x) { return x * 2; };
-    return *ptr + f(21);
-}
-```
-
-**Generated Rust Comments:**
-```rust
-// C++ to Rust Translator
-// Generated from C++ code analysis
-
-// C++ Feature Detected: std::unique_ptr<T>
-// Rust Equivalent: Box<T>
-// Notes: Exclusive ownership of a dynamically allocated object.
-//
-// How to declare in Rust:
-// let ptr = Box::new(value);
-
-// ---
-
-// C++ Feature Detected: std::vector<T>
-// Rust Equivalent: Vec<T>
-// Notes: Dynamic array with contiguous memory.
-//
-// How to declare in Rust:
-// let vec = vec![1, 2, 3];
-
-// ---
-
-// C++ Feature Detected: Lambda expressions
-// Rust Equivalent: Closures (Fn, FnMut, FnOnce)
-//
-// How to declare in Rust:
-// let f = |x: i32| x * 2;
-
-// ---
-```
+| Key | Default | Description |
+|---|---|---|
+| `cppToRust.llmEnabled` | `true` | Master switch |
+| `cppToRust.llmEndpoint` | `http://localhost:8001` | `llama-server` base URL |
+| `cppToRust.llmModel` | `unsloth/Qwen3.5-35B-A3B` | Model alias |
+| `cppToRust.sideBySide` | `true` | Auto-open `.hints.md` beside the C++ file |
+| `cppToRust.healthCheckIntervalMs` | `30000` | Status bar health-poll cadence |
+| `cppToRust.cargoMirrorEnabled` | `true` | Scaffold and maintain `rust_<name>/` next to detected `cpp_<name>/` |
 
 ## Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Compile TypeScript
-npm run compile
-
-# Watch for changes
-npm run watch
-
-# Lint
-npm run lint
-
-# Build VSIX
-npx vsce package
+npm run compile    # tsc -p ./ → out/
+npm run watch      # tsc -watch
+npm run lint       # eslint src --ext ts
+npx vsce package   # build .vsix
 ```
+
+Source layout (`src/`):
+
+- `extension.ts` — activation shim, command registration.
+- `feature-detector.ts` — orchestrator: save listener, status bar, hover provider, hints file writer.
+- `llm-client.ts` — OpenAI-compatible chat client with strict output contract (`##` headings, `<!-- anchor: cpp-line-N -->`, trailing `<!-- deps: … -->`).
+- `cargo-mirror.ts` — `CMakeLists.txt` ancestor walk, `cargo new --bin`, serialized `cargo add`.
 
 ## License
 
 MIT
-# cpp2rustpal
