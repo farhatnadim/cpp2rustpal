@@ -32,4 +32,5 @@ exec "${SERVER_BIN}" \
     --temp 0.6 \
     --top-p 0.95 \
     --top-k 20 \
-    --min-p 0.00
+    --min-p 0.00 \
+    --port 8001
