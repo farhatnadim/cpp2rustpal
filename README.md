@@ -48,10 +48,10 @@ It runs preflight checks, builds `llama.cpp`, pre-fetches the GGUF into `$HOME/.
 After install, start the server in its own terminal:
 
 ```bash
-scripts/run-llama-server.sh
+bash scripts/start_model.sh
 ```
 
-Open a `.cpp` file in VS Code — the status bar flips to online within 30 s. See [`scripts/README.md`](./scripts/README.md) for server env knobs.
+Open a `.cpp` file in VS Code — the status bar flips to online within 30 s.
 
 ## Install
 
@@ -87,17 +87,64 @@ For development, press `F5` in VS Code to launch an Extension Development Host.
 | `cppToRust.healthCheckIntervalMs` | `30000` | Status bar health-poll cadence |
 | `cppToRust.cargoMirrorEnabled` | `true` | Scaffold and maintain `rust_<name>/` next to detected `cpp_<name>/` |
 
+## CLI (terminal-based hints)
+
+A standalone Python CLI that watches a C++ file and streams rich Rust translation hints to the terminal. Supports the Anthropic API or a local llama.cpp server as the backend.
+
+### Setup
+
+```bash
+# 1. (once) Build llama-server — auto-detects NVIDIA GPU
+bash scripts/build_llama.sh
+
+# 2. Start the model server in its own terminal
+bash scripts/start_model.sh
+
+# 3. (optional) Set up the local Rust Book for clickable reference links
+bash cli/setup_book.sh       # clones, builds mdBook, generates index
+bash cli/serve_book.sh       # serve at http://localhost:3000
+
+# 4. Create a venv and install dependencies
+python3 -m venv cli/.venv
+source cli/.venv/bin/activate
+pip install -r cli/requirements.txt
+```
+
+### Usage
+
+```bash
+# Auto-detects backend: Anthropic if ANTHROPIC_API_KEY is set, else local
+python3 cli/cpp_to_rust_hints.py path/to/file.cpp
+
+# Explicitly use the local model server
+python3 cli/cpp_to_rust_hints.py path/to/file.cpp --backend local
+
+# Use the Anthropic API
+python3 cli/cpp_to_rust_hints.py path/to/file.cpp --backend anthropic
+```
+
+The CLI polls the file every 10 seconds and streams a new analysis whenever the file changes.
+
+### Environment variables (shared with `scripts/start_model.sh`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLAMA_CPP_DIR` | `$HOME/Source/llama.cpp` | Directory containing `llama-server` |
+| `MODEL_HF` | `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL` | HuggingFace repo:quant |
+| `PORT` | `8001` | Port for the model server |
+| `ANTHROPIC_API_KEY` | — | Required when `--backend anthropic` |
+
 ## Development
 
 ```bash
 npm install
-npm run compile    # tsc -p ./ → out/
+npm run compile    # tsc -p ./ → out/extension/
 npm run watch      # tsc -watch
-npm run lint       # eslint src --ext ts
+npm run lint       # eslint extension --ext ts
 npx vsce package   # build .vsix
 ```
 
-Source layout (`src/`):
+Source layout (`extension/`):
 
 - `extension.ts` — activation shim, command registration.
 - `feature-detector.ts` — orchestrator: save listener, status bar, hover provider, hints file writer.

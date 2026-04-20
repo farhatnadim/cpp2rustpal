@@ -4,24 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-VS Code extension ("Pal — C++ to Rust") that surfaces Rust equivalents for C++ constructs the user is writing. Activates on `cpp`, `c`, `cuda-cpp`. Published entry point is `./out/extension.js`, compiled from `src/`.
+Two surfaces sharing infrastructure for C++ → Rust hints:
+
+- **VS Code extension** (`extension/`) — surfaces hints inline as you write C++. Activates on `cpp`, `c`, `cuda-cpp`. Published entry point: `./out/extension/extension.js`, compiled from `extension/`.
+- **Python CLI** (`cli/`) — standalone file watcher that streams rich mentorship-style hints to the terminal. Supports Anthropic API and local llama.cpp server.
+- **Shared scripts** (`scripts/`) — `build_llama.sh` (GPU-aware build) and `start_model.sh` (server runner). Both surfaces use the same env vars: `LLAMA_CPP_DIR`, `MODEL_HF`, `PORT`, endpoint `http://localhost:8001`.
 
 ## Commands
 
 ```bash
+# Extension
 npm install
-npm run compile      # tsc -p ./ → out/
+npm run compile      # tsc -p ./ → out/extension/
 npm run watch        # tsc -watch
-npm run lint         # eslint src --ext ts
+npm run lint         # eslint extension --ext ts
 npm test             # vscode-test (no tests authored yet)
 npx vsce package     # build .vsix
+
+# CLI
+python3 -m venv cli/.venv && source cli/.venv/bin/activate
+pip install -r cli/requirements.txt
+python3 cli/cpp_to_rust_hints.py path/to/file.cpp [--backend local|anthropic]
+
+# Shared model server
+bash scripts/build_llama.sh   # build llama-server (once)
+bash scripts/start_model.sh   # start model server on port 8001
 ```
 
 Debug the extension by pressing `F5` in VS Code to launch an Extension Development Host. No single-test command is wired up because no test files exist.
 
 ## Architecture
 
-Three-file core in `src/`:
+Three-file core in `extension/`:
 
 - **`extension.ts`** — activation shim. Instantiates `FeatureDetector`, registers the three `cppToRust.*` commands, forwards to the detector.
 - **`feature-detector.ts`** — the orchestrator. Owns VS Code state: config settings, debounce timers per-document, the set of extension-opened sidecar files, and the status-bar item. Wires document events (change/save/close) to translation runs and manages the side-by-side editor.

@@ -21,7 +21,7 @@
     "onLanguage:c",
     "onLanguage:cuda-cpp"
   ],
-  "main": "./out/extension.js",
+  "main": "./out/extension/extension.js",
   "contributes": {
     "commands": [
       {
@@ -85,7 +85,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts",
+    "lint": "eslint extension --ext ts",
     "test": "vscode-test"
   },
   "dependencies": {},

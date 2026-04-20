@@ -3,3 +3,6 @@ out/
 *.vsix
 .vscode-test/
 .claude/
+cli/.venv/
+cli/rust-book/
+cli/book_chapters.json
